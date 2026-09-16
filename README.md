@@ -1,151 +1,128 @@
-# Dyslexia Prediction
+# Dyslexia Screening
 
-## Overview
-This project predicts dyslexia risk levels (High, Moderate, Low) using a machine learning model with an interactive interface built in Streamlit.
+A guided Streamlit research application for dyslexia screening exercises. It combines vocabulary, memory, reading, listening and self-reported activities with the repository's existing trained model.
 
-## Source of Data
-The dataset used in this project is sourced from Kaggle: [Dyslexia Dataset](https://www.kaggle.com/datasets/thenikhilnj45/dyslexiaproject).
+> **Important:** This is an educational/research screening tool, not a medical device or diagnosis. Consult a qualified professional for formal assessment.
 
----
+## Quick start
 
-## File Structure
-### Main Files
-- **Details_dyslexia.ipynb**:  
-  The final notebook version that includes all preprocessing, model training, and prediction logic.
-- **data_preprocessing_model_training.ipynb**:  
-  A separate notebook for data preprocessing and model training using Random Forest with GridSearchCV.
-- **inputtest.ipynb**:  
-  A notebook demonstrating how the inputs work to generate predictions (High, Moderate, Low). This functionality is not exposed in the Streamlit app.
-- **Dyslexia_test_questions_set.docx**:  
-  A document containing a custom test created using data and formulas from several well-known sources.
+Requirements: Python 3.11 and Git. The pinned dependencies match the saved scikit-learn artifacts.
 
----
+```powershell
+git clone https://github.com/beyondmarks-ai/Dyslexia.git
+cd Dyslexia
+py -3.11 -m venv .venv
+.\\.venv\\Scripts\\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-## Dyslexia Detection Tool: Instructions
+Open <http://localhost:8501>.
 
-This tool uses a machine learning model to detect dyslexia through vocabulary and memory tests. Below are the steps to set up, run, and interact with the project.
+If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process Bypass` once in that terminal, or use the virtual environment directly:
 
-### Prerequisites
+```powershell
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
+.\\.venv\\Scripts\\streamlit.exe run app.py
+```
 
-### Install Required Software
-1. **Python**: Install Python 3.8 or later. You can download it from [python.org](https://www.python.org/downloads/).
-2. **pip**: Ensure you have `pip` installed to manage Python packages.
+## What the app does
 
-### Clone the Repository
-1. Open a terminal (or command prompt) and run:
-   ```bash
-   git clone <repository_url>
-   cd <repository_name>
-   ```
+1. Explains the scope and obtains acknowledgement.
+2. Runs vocabulary and memory exercises.
+3. Runs reading, visual discrimination, listening and questionnaire activities.
+4. Optionally sends an explicitly recorded reading to Azure Speech for transcription.
+5. Produces a screening indication and score summary.
 
-### Install Dependencies
-2. Install the necessary Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
+The model receives exactly these six values, in this order:
 
-3. **Streamlit**: Ensure Streamlit is installed. You can install it using:
-   ```bash
-   pip install streamlit
-   ```
+`Language_vocab`, `Memory`, `Speed`, `Visual_discrimination`, `Audio_Discrimination`, `Survey_Score`
 
-### Additional Setup
-4. **Dataset**: Place your training and testing data (e.g., vocabulary and memory test quizzes) in the `data/` directory. Make sure the folder structure matches what the scripts expect.
+Reading and speech measurements are supplementary. They are not additional model features.
 
-5. **Model File**: Ensure the pre-trained model file is in the `models/` directory. The model file name should match the one referenced in the code.
+## Run checks
 
----
+```powershell
+python -m unittest discover -s tests -v
+```
 
-## Running the Application
+The tests cover artifact loading, input validation, scoring, the complete Streamlit flow and the form contrast regression.
 
-### Step 1: Launch the Interface
-1. Run the application using the following command:
-   ```
-   streamlit run app.py
-   ```
+## Optional Azure Speech
 
-2. This will start a local web server. You should see output similar to:
-   ```
-   Local URL: http://localhost:8501
-   Network URL: http://<your_network_ip>:8501
-   ```
+Install the optional dependencies and configure Azure Speech before starting the app:
 
-### Step 2: Open the Web Interface
-1. Open your browser and navigate to the provided URL (e.g., `http://localhost:8501`).
-2. You will see the Dyslexia Detection Tool interface.
+```powershell
+pip install -r requirements-azure.txt
+$env:AZURE_SPEECH_ENDPOINT = "https://<resource>.cognitiveservices.azure.com/"
+$env:AZURE_SPEECH_RESOURCE_ID = "/subscriptions/<id>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<resource>"
+$env:AZURE_SPEECH_LANGUAGE = "en-US"
+az login
+streamlit run app.py
+```
 
----
+The app uses `DefaultAzureCredential`, so Azure CLI authentication works locally and managed identity can be used in Azure Container Apps. If Speech is not configured or fails, the core screening still works.
 
-## Using the Tool
+| Variable | Required | Description |
+|---|---|---|
+| `AZURE_SPEECH_ENDPOINT` | Speech only | Azure Speech endpoint |
+| `AZURE_SPEECH_RESOURCE_ID` | Speech only | Azure resource ID used for Entra authentication |
+| `AZURE_SPEECH_LANGUAGE` | No | Recognition locale; defaults to `en-US` |
 
-### Vocabulary Test
-1. Start the vocabulary quiz by clicking the **Start Vocabulary Test** button.
-2. Random words will appear. Enter your responses into the input fields.
-3. Submit your answers to evaluate the test.
+## Run with Docker
 
-### Memory Test
-1. Initiate the memory test by clicking the **Start Memory Test** button.
-2. The system will play audio with a list of words.
-3. After playback, input the words you recall.
-4. Submit your responses to see the evaluation.
+```powershell
+docker build -t dyslexia-screening .
+docker run --rm -p 8501:8501 dyslexia-screening
+```
 
----
+Open <http://localhost:8501> after the container starts.
 
-## Results and Feedback
-1. After completing the quizzes, the tool will provide feedback on your performance.
-2. The results will also include a prediction about potential dyslexia indicators based on the machine learning model.
+## Deploy to Azure Container Apps
 
----
+Prerequisites: Azure CLI, an active subscription, Docker/Container Apps build support, and `az login`.
 
-## Optional: Model Training
-If you want to train the model with new data:
+```powershell
+az login
+az account show
+.\\scripts\\deploy_azure.ps1 `
+  -ResourceGroup <resource-group> `
+  -AppName dyslexia-screening `
+  -Location centralindia `
+  -Environment <container-apps-environment>
+```
 
-### Step 1: Prepare the Dataset
-1. Place the dataset in the `data/` directory.
-2. Ensure the data is labeled and preprocessed correctly.
+The script deploys from the repository, exposes port 8501 over HTTPS, and configures 0.5 CPU, 1 GiB memory, zero minimum replicas and one maximum replica. It does not train the model, provision a GPU or delete resources.
 
-### Step 2: Run the Training Script
-1. Execute the following command:
-   ```bash
-   python train_model.py
-   ```
-2. Once training is complete, the updated model file will be saved in the `models/` directory.
+See [docs/AZURE.md](docs/AZURE.md) for identity configuration, environment variables and operational notes.
 
----
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| `app.py` | Streamlit application and screening workflow |
+| `services/model_service.py` | Artifact loading, validation, scaling and inference |
+| `services/test_service.py` | Deterministic score calculations |
+| `services/speech_service.py` | Optional Azure Speech integration |
+| `model.pkl`, `scaler.pkl` | Existing inference artifacts |
+| `Audios_memory/` | Audio exercises |
+| `questions_vocab.json` | Vocabulary question bank |
+| `tests/` | Standard-library and Streamlit tests |
+| `docs/` | Architecture, model and Azure notes |
+| `Dockerfile` | Container runtime definition |
+
+## Model and limitations
+
+The saved artifacts are used as-is; this repository does not retrain them during startup. An artifact-consistent evaluation measured 92.75% accuracy on the original 400-row held-out partition. That is dataset performance, not clinical accuracy, and the data has not been established here as clinically validated or population-representative.
+
+The application keeps screening data in the active Streamlit session and does not configure application storage. Optional speech audio is sent to Azure Speech only when the user records audio and Azure is configured. It is not used for model inference.
+
+For technical details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/CURRENT_MODEL.md](docs/CURRENT_MODEL.md).
 
 ## Troubleshooting
 
-1. **Dependencies Issues**: Ensure all required Python packages are installed. If an error occurs, try:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Port Issues**: If the port is already in use, specify a different port:
-   ```bash
-   streamlit run app.py --server.port 8080
-   ```
-
-3. **Browser Issues**: Clear your browser cache or try a different browser if the interface does not load.
-
----
----
-### Interface view
-https://github.com/user-attachments/assets/479e1f63-2a31-4930-aa8c-9d328cc19ab4
-
-
-
-## Notes
-- The Streamlit app does not include detailed input workflows, which are instead demonstrated in `inputtest.ipynb`.
-- Audio-based questions rely on the `Audios_memory` directory for execution.
-
----
-
-## Contact
-If you have any questions or encounter issues, feel free to open an issue or contact through tuanvi11235@gmail.com or karandahal@gmail.com
-
-
-This structure is clean, visually appealing, and follows GitHub README best practices.
-
-
-
-
+- **Port 8501 is busy:** run `streamlit run app.py --server.port 8502`.
+- **Model loading fails:** use Python 3.11 and install the pinned `requirements.txt`.
+- **Speech is unavailable:** verify all Speech variables and `az login`; the optional section can be skipped.
+- **Docker cannot build:** confirm Docker is running and run the build command from the repository root.

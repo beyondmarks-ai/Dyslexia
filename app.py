@@ -1,756 +1,352 @@
-import streamlit as st
-import pickle
-import pandas as pd
-import random
+"""Streamlit interface for the existing dyslexia screening research model."""
+
+from __future__ import annotations
+
 import json
+import random
 import time
-import os
-from sklearn.preprocessing import StandardScaler
-import streamlit.components.v1 as components
+import uuid
+from pathlib import Path
 
-# Apply a custom style
-st.set_page_config(page_title="Dyslexia Detection Tool", page_icon="🧠", layout="wide")
-st.markdown("""
-    <style>
-    /* Center the content */
-    .main > div {{
-        max-width: 800px;
-        margin: auto;
-    }}
-    /* Style headers */
-    h1, h2, h3 {{
-        color: #2c3e50;
-        text-align: center;
-    }}
-    /* Style the countdown timer */
-    #timer {{
-        font-size: 24px;
-        font-weight: bold;
-        color: #e74c3c;
-        text-align: center;
-        margin-bottom: 20px;
-    }}
-    /* Style buttons */
-    .stButton>button {{
-        background-color: #2ecc71;
-        color: white;
-        border: none;
-        padding: 10px 20px;
-        margin: 5px 0px;
-        cursor: pointer;
-        font-size: 16px;
-        border-radius: 4px;
-    }}
-    .stButton>button:hover {{
-        background-color: #27ae60;
-    }}
-    /* Style radio buttons */
-    .stRadio > label {{
-        font-weight: bold;
-    }}
-    /* Style warnings */
-    .stWarning {{
-        background-color: #f1c40f;
-        color: #2c3e50;
-    }}
-    /* Style success messages */
-    .stSuccess {{
-        background-color: #2ecc71;
-        color: white;
-    }}
-    </style>
-""", unsafe_allow_html=True)
+import pandas as pd
+import streamlit as st
 
-# Load the trained model and scaler
-with open('model.pkl', 'rb') as model_file:
-    model = pickle.load(model_file)
+from services.model_service import ModelServiceError, feature_importance, predict
+from services.speech_service import is_configured, transcribe
+from services.test_service import score_answers, score_recalled_words, speed_score
 
-with open('scaler.pkl', 'rb') as scaler_file:
-    scaler = pickle.load(scaler_file)
+ROOT = Path(__file__).resolve().parent
+AUDIO_DIR = ROOT / "Audios_memory"
+STEPS = ["Vocabulary", "Memory", "Reading", "Optional speech", "Result"]
+DISCLAIMER = (
+    "This application is a research/educational screening tool and does not provide "
+    "a medical diagnosis. A qualified professional should perform any formal assessment."
+)
+MEMORY_WORDS = [
+    ["Apple", "Lettuce", "House", "River", "Dog", "Book", "Cooking"],
+    ["Dog", "Cat", "Rabbit", "Horse", "Sheep", "Cow", "Goat"],
+    ["Table", "Chair", "Sofa", "Bed", "Desk", "Lamp", "Shelf"],
+    ["River", "Lake", "Ocean", "Pond", "Stream", "Beach", "Waterfall"],
+    ["Red", "Blue", "Green", "Yellow", "Pink", "Black", "White"],
+    ["Car", "Bus", "Train", "Plane", "Boat", "Bike", "Truck"],
+    ["Rain", "Snow", "Sun", "Cloud", "Wind", "Storm", "Thunder"],
+    ["Pen", "Pencil", "Eraser", "Paper", "Book", "Notebook", "Ruler"],
+    ["Tree", "Flower", "Grass", "Leaf", "Seed", "Branch", "Bush"],
+    ["Shirt", "Pants", "Socks", "Jacket", "Hat", "Gloves", "Scarf"],
+]
+READING_QUESTIONS = [
+    {"prompt": "Maya packed a blue coat because the morning was cold. Why did Maya pack a coat?", "options": ["It was cold", "It was raining", "It was new"], "answer": "It was cold"},
+    {"prompt": "Choose the word that completes the sentence: The bird built a ___ in the tree.", "options": ["nest", "net", "next"], "answer": "nest"},
+    {"prompt": "Which word rhymes with light?", "options": ["night", "late", "lot"], "answer": "night"},
+    {"prompt": "Which sentence has the same meaning as 'The small dog ran quickly'?", "options": ["The little dog ran fast", "The large dog walked", "The dog slept"], "answer": "The little dog ran fast"},
+]
+PHONEMES = [
+    ("Bat and Pat", "Bat_Pat.mp3", "Different"),
+    ("Ship and Sheep", "Ship_Sheep.mp3", "Different"),
+    ("Cat and Cat", "Cat_Cat.mp3", "Same"),
+    ("Light and Right", "Light_Right.mp3", "Different"),
+    ("Thin and Tin", "Thin_Tin.mp3", "Different"),
+]
+SURVEY_QUESTIONS = [
+    "I find it difficult to read words or letters in the correct order.",
+    "I have trouble spelling common words correctly.",
+    "I mix up similar-looking letters such as b and d.",
+    "I find it hard to concentrate when reading or writing.",
+    "I have difficulty remembering sequences such as phone numbers.",
+]
 
-# The exact feature names used during training
-columns = ['Language_vocab', 'Memory', 'Speed', 'Visual_discrimination', 'Audio_Discrimination', 'Survey_Score']
-
-# Load vocabulary questions
-with open('questions_vocab.json', 'r') as file:
-    vocab_data = json.load(file)
-
-# Set the maximum and minimum time limits in minutes
-max_time = 30  # Total time for the test in minutes
-min_time = 3   # Time at which speed score is at maximum (1)
-
-# Initialize session state variables
-if 'start_time' not in st.session_state:
-    st.session_state.start_time = int(time.time())  # Store as integer seconds
-
-if 'time_up' not in st.session_state:
-    st.session_state.time_up = False
-
-# Function to calculate time remaining
-def get_time_remaining():
-    elapsed_time = int(time.time()) - st.session_state.start_time
-    time_remaining = max(0, max_time * 60 - elapsed_time)
-    return time_remaining
-
-# Display the countdown timer using JavaScript
-time_remaining = get_time_remaining()
-
-# If time is up, set the flag
-if time_remaining <= 0:
-    st.session_state.time_up = True
-
-# Function to display the countdown timer
-def display_timer():
-    total_seconds = get_time_remaining()
-    if total_seconds <= 0:
-        total_seconds = 0
-        st.session_state.time_up = True
-    else:
-        st.session_state.time_up = False
-    minutes = total_seconds // 60
-    seconds = total_seconds % 60
-
-    countdown_html = f"""
-    <script>
-    function startTimer(duration, display) {{
-        var timer = duration, minutes, seconds;
-        setInterval(function () {{
-            minutes = parseInt(timer / 60, 10);
-            seconds = parseInt(timer % 60, 10);
-
-            minutes = minutes < 10 ? "0" + minutes : minutes;
-            seconds = seconds < 10 ? "0" + seconds : seconds;
-
-            display.innerHTML = "⏳ Time Remaining: " + minutes + ":" + seconds;
-
-            if (--timer < 0) {{
-                timer = 0;
-                display.innerHTML = "⏰ Time is up!";
-            }}
-        }}, 1000);
-    }}
-
-    window.onload = function () {{
-        var totalSeconds = {total_seconds};
-        var display = document.getElementById('timer');
-        startTimer(totalSeconds, display);
-    }};
-    </script>
-    <div id="timer">⏳ Time Remaining: {minutes:02d}:{seconds:02d}</div>
+st.set_page_config(page_title="Dyslexia Screening Research Application", page_icon="DS", layout="wide")
+st.markdown(
     """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Crimson+Pro:wght@600;700&display=swap');
+    :root { --ink:#1e1b4b; --muted:#475569; --primary:#4f46e5; --surface:#fff; --border:#c7d2fe; }
+    html, body, [class*="css"] { font-family:'Atkinson Hyperlegible',Arial,sans-serif; color:var(--ink); }
+    .stApp { background:linear-gradient(145deg,#f8fafc 0%,#eef2ff 100%); }
+    .block-container { max-width:1060px; padding-top:2rem; padding-bottom:4rem; }
+    h1,h2,h3 { font-family:'Crimson Pro',Georgia,serif; color:var(--ink); letter-spacing:-.01em; }
+    .hero { background:#fff; border:1px solid var(--border); border-radius:24px; padding:clamp(24px,5vw,56px); box-shadow:0 14px 34px rgba(79,70,229,.09); }
+    .eyebrow { color:#4338ca; font-weight:700; text-transform:uppercase; letter-spacing:.08em; font-size:.82rem; }
+    .lead { color:var(--muted); font-size:1.16rem; line-height:1.65; max-width:720px; }
+    .notice { background:#fff7ed; border-left:5px solid #ea580c; border-radius:12px; padding:16px 18px; color:#431407; margin:18px 0; }
+    .stepbar { display:flex; gap:8px; margin:8px 0 28px; flex-wrap:wrap; }
+    .step { padding:9px 13px; border-radius:999px; border:1px solid var(--border); background:#fff; color:#475569; font-weight:700; }
+    .step.active { background:#4f46e5; color:#fff; border-color:#4f46e5; }
+    .step.done { background:#e0e7ff; color:#312e81; }
+    .result-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:22px; min-height:126px; box-shadow:0 8px 22px rgba(30,27,75,.06); }
+    .result-label { color:#475569; font-size:.9rem; }
+    .result-value { color:#1e1b4b; font-size:1.8rem; font-weight:700; margin-top:5px; }
+    div.stButton > button, div.stFormSubmitButton > button { min-height:48px; border-radius:12px; font-weight:700; transition:box-shadow .18s ease,background .18s ease; }
+    div.stButton > button:focus-visible, div.stFormSubmitButton > button:focus-visible { outline:3px solid #f97316; outline-offset:2px; }
+    [data-testid="stForm"] { background:#fff; border:1px solid var(--border); border-radius:18px; padding:20px; }
+    [data-testid="stForm"] label,
+    [data-testid="stForm"] [data-testid="stWidgetLabel"] p,
+    [data-testid="stForm"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stForm"] [role="radiogroup"] p { color:#1e1b4b !important; }
+    [data-testid="stForm"] input { color:#1e1b4b !important; background:#fff; }
+    [data-testid="stForm"] * { color:#000 !important; }
+    div.stFormSubmitButton > button, div.stFormSubmitButton > button * { color:#fff !important; }
+    @media (prefers-reduced-motion:reduce) { * { transition:none !important; scroll-behavior:auto !important; } }
+    @media (max-width:600px) { .block-container{padding:1rem 1rem 3rem}.hero{padding:24px}.step{font-size:.82rem;padding:7px 9px} }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    components.html(countdown_html, height=80)
 
-# Call the function to display the timer
-display_timer()
+def initialize() -> None:
+    for key, value in {"page": "home", "session_id": str(uuid.uuid4()), "memory_stage": "memorize"}.items():
+        st.session_state.setdefault(key, value)
 
-# Streamlit UI
-st.title("🧠 Dyslexia Detection Tool")
 
-# Vocabulary Test
-st.header("📖 Vocabulary Test")
-st.write("Choose the correct word for each sentence:")
+def navigate(page: str) -> None:
+    st.session_state.page = page
+    if page == "vocabulary" and "start_time" not in st.session_state:
+        st.session_state.start_time = time.time()
+        st.session_state.vocab_started = time.time()
+    if page == "reading":
+        st.session_state.setdefault("reading_started", time.time())
 
-# Check if time is up before displaying inputs
-if not st.session_state.time_up:
-    # Check if the questions have already been selected in the session state
-    if 'selected_questions' not in st.session_state:
-        # Randomly choose 10 sentence completion questions
-        sentence_completion_questions = [q for q in vocab_data['questions'] if q['type'] == 'sentence_completion']
-        st.session_state.selected_questions = random.sample(sentence_completion_questions, 10)
 
-    # Get the selected questions from session state
-    selected_questions = st.session_state.selected_questions
+def restart() -> None:
+    st.session_state.clear()
+    initialize()
 
-    # Initialize user answers if not already done
-    if 'vocab_user_answers' not in st.session_state:
-        st.session_state.vocab_user_answers = ['Select an answer'] * len(selected_questions)
 
-    # Display the questions
-    for i, question in enumerate(selected_questions):
-        st.markdown(f"<h5>Question {i+1}: {question['question']}</h5>", unsafe_allow_html=True)
-        options = ['Select an answer'] + question['options']
-        user_answer = st.radio(
-            f"Choose the correct answer for Question {i+1}",
-            options=options,
-            index=options.index(st.session_state.vocab_user_answers[i]) if st.session_state.vocab_user_answers[i] in options else 0,
-            key=f"vocab_q{i+1}"
-        )
-        st.session_state.vocab_user_answers[i] = user_answer
+def progress(active: str) -> None:
+    current = STEPS.index(active)
+    items = "".join(
+        f'<span class="step {"active" if i == current else "done" if i < current else ""}">{i + 1}. {name}</span>'
+        for i, name in enumerate(STEPS)
+    )
+    st.markdown(f'<div class="stepbar" aria-label="Screening progress">{items}</div>', unsafe_allow_html=True)
 
-    # Submit button to evaluate the answers
-    if st.button("Submit Vocabulary Test"):
-        # Collect the correct answers for the selected questions
-        correct_answers = [q['correct_answer'] for q in selected_questions]
-        # Calculate score, assigning 0 for unanswered questions
-        score_count = 0
-        for user_answer, correct in zip(st.session_state.vocab_user_answers, correct_answers):
-            if user_answer != 'Select an answer' and user_answer.lower() == correct.lower():
-                score_count += 1
-            # Else, score is 0 for this question
-        vocab_score = score_count / len(correct_answers)
-        st.success(f"Vocabulary Test Score: {vocab_score:.2f} (0 = no correct answers, 1 = all correct answers)")
-        st.session_state.Language_vocab = vocab_score  # Store the score in session state
-else:
-    st.warning("Time is up! Vocabulary Test is no longer available.")
 
-st.markdown("---")  # Add a horizontal line separator
+def metric_card(label: str, value: str) -> None:
+    st.markdown(f'<div class="result-card"><div class="result-label">{label}</div><div class="result-value">{value}</div></div>', unsafe_allow_html=True)
 
-# Header for Part 1
-st.header("🧩 Memory Test Part 1: Number Sequences")
-st.write("Observe the sequence of numbers. After the sequence disappears, type them in the correct order and press submit to check your answer.")
 
-# Initialize session state variables for Part 1
-if 'sequences' not in st.session_state:
-    # Generate 5 random sequences of 6 digits
-    st.session_state.sequences = [random.sample(range(10), 6) for _ in range(5)]
-    st.session_state.memory_displayed = [False] * 5
-    st.session_state.memory_submitted = [False] * 5
-    st.session_state.memory_user_answers = [''] * 5
-    st.session_state.memory_scores = [0] * 5
+def render_home() -> None:
+    st.markdown(
+        """
+        <div class="hero"><div class="eyebrow">Research application</div>
+        <h1>Dyslexia screening, presented with care.</h1>
+        <p class="lead">A short, guided activity covering vocabulary, memory, reading, listening and self-reported experiences. It uses the project's existing trained model and keeps additional reading and speech observations separate.</p></div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(f'<div class="notice"><strong>Important:</strong> {DISCLAIMER}</div>', unsafe_allow_html=True)
+    left, middle, right = st.columns(3)
+    left.metric("Estimated time", "10–15 min")
+    middle.metric("Core sections", "3")
+    right.metric("Speech", "Optional")
+    st.button("Start screening", type="primary", use_container_width=True, on_click=navigate, args=("instructions",))
 
-# Function to display sequence with a countdown
-def display_sequence(sequence_idx):
-    sequence = st.session_state.sequences[sequence_idx]
-    sequence_str = " ".join(map(str, sequence))
 
-    # Create a placeholder for dynamic updates
-    placeholder = st.empty()
+def render_instructions() -> None:
+    st.title("Before you begin")
+    st.write("Choose a quiet place, use headphones for listening items, and answer without outside help. You can stop at any time.")
+    st.info("No name, email address or other direct identifier is requested. Your session has a random identifier and is not stored by this application.")
+    st.markdown(f'<div class="notice"><strong>Consent and scope:</strong> {DISCLAIMER}</div>', unsafe_allow_html=True)
+    acknowledged = st.checkbox("I understand that this is not a medical diagnosis.")
+    st.button("Begin vocabulary", type="primary", disabled=not acknowledged, on_click=navigate, args=("vocabulary",))
 
-    for remaining in range(5, 0, -1):
-        with placeholder.container():
-            st.markdown(
-                f"<div style='text-align:center; color:#e74c3c;'><strong>{sequence_str}</strong></div>", 
-                unsafe_allow_html=True
-            )
-            st.markdown(
-                f"<div style='text-align:center; color:#2ecc71;'>Time remaining: {remaining} seconds</div>", 
-                unsafe_allow_html=True
-            )
-        time.sleep(1)
 
-    # Clear the placeholder after the countdown
-    placeholder.empty()
-    st.session_state.memory_displayed[sequence_idx] = True
+def render_vocabulary() -> None:
+    progress("Vocabulary")
+    st.title("Vocabulary")
+    st.write("Choose the word that best completes each sentence.")
+    if "vocab_questions" not in st.session_state:
+        questions = json.loads((ROOT / "questions_vocab.json").read_text(encoding="utf-8"))["questions"]
+        st.session_state.vocab_questions = random.sample(questions, min(10, len(questions)))
+    with st.form("vocabulary_form"):
+        answers = [st.radio(q["question"], q["options"], index=None, key=f"vocab_{i}") or "" for i, q in enumerate(st.session_state.vocab_questions)]
+        submitted = st.form_submit_button("Continue to memory", type="primary")
+    if submitted:
+        if any(not answer for answer in answers):
+            st.error("Please answer every vocabulary question before continuing.")
+            return
+        metrics = score_answers(answers, [q["correct_answer"] for q in st.session_state.vocab_questions])
+        metrics["response_seconds"] = round(time.time() - st.session_state.vocab_started, 1)
+        st.session_state.vocabulary = metrics
+        st.session_state.Language_vocab = metrics["accuracy"]
+        st.session_state.memory_sequences = ["".join(map(str, random.sample(range(10), 6))) for _ in range(3)]
+        st.session_state.memory_audio_ids = random.sample(range(10), 3)
+        navigate("memory")
+        st.rerun()
 
-# Display buttons and inputs for Part 1
-for i in range(5):
-    sequence_label = f"Sequence {i + 1}"
 
-    # Button to display the sequence
-    if not st.session_state.memory_displayed[i] and not st.session_state.memory_submitted[i]:
-        if st.button(f"Display {sequence_label}", key=f"display_{i}"):
-            display_sequence(i)
+def render_memory() -> None:
+    progress("Memory")
+    st.title("Memory")
+    if st.session_state.memory_stage == "memorize":
+        st.write("Study each six-digit sequence. When ready, continue; the sequences will be hidden.")
+        for index, sequence in enumerate(st.session_state.memory_sequences, 1):
+            st.code(f"Sequence {index}: {' '.join(sequence)}", language=None)
+        if st.button("I have memorized the sequences", type="primary"):
+            st.session_state.memory_stage = "recall"
+            st.session_state.memory_started = time.time()
+            st.rerun()
+        return
+    st.write("Enter the digit sequences, then listen once to each word list and recall the words in order.")
+    with st.form("memory_form"):
+        sequence_answers = [st.text_input(f"Sequence {i + 1}", max_chars=12) for i in range(3)]
+        audio_answers = []
+        for i, audio_id in enumerate(st.session_state.memory_audio_ids):
+            st.audio(str(AUDIO_DIR / f"audio_{audio_id + 1}.wav"), format="audio/wav")
+            audio_answers.append(st.text_input(f"Words recalled from audio {i + 1}"))
+        submitted = st.form_submit_button("Continue to reading", type="primary")
+    if submitted:
+        if any(not value.strip() for value in sequence_answers + audio_answers):
+            st.error("Please attempt every memory item before continuing.")
+            return
+        sequence_metrics = score_answers(sequence_answers, st.session_state.memory_sequences)
+        expected_lists = [MEMORY_WORDS[i] for i in st.session_state.memory_audio_ids]
+        recall_scores = [score_recalled_words(answer, expected) for answer, expected in zip(audio_answers, expected_lists)]
+        recall_exact = sum(score == 1 for score in recall_scores)
+        score = (sequence_metrics["accuracy"] + sum(recall_scores) / len(recall_scores)) / 2
+        st.session_state.memory = {"total": 6, "correct": sequence_metrics["correct"] + recall_exact, "incorrect": 6 - sequence_metrics["correct"] - recall_exact, "accuracy": score, "recall_score": sum(recall_scores) / len(recall_scores), "response_seconds": round(time.time() - st.session_state.memory_started, 1)}
+        st.session_state.Memory = score
+        navigate("reading")
+        st.rerun()
 
-    # Input box for the user to enter their answer for this sequence
-    if st.session_state.memory_displayed[i] and not st.session_state.memory_submitted[i]:
-        user_answer = st.text_input(
-            f"Enter the sequence for {sequence_label}",
-            value=st.session_state.memory_user_answers[i],
-            max_chars=12,
-            key=f"memory_input_{i}"
-        )
-        st.session_state.memory_user_answers[i] = user_answer
 
-        if st.button(f"Submit {sequence_label}", key=f"submit_{i}"):
-            correct_sequence = ''.join(map(str, st.session_state.sequences[i]))
-            if user_answer.strip() != '':
-                if user_answer.replace(" ", "") == correct_sequence:
-                    st.success(f"{sequence_label}: Correct!")
-                    st.session_state.memory_scores[i] = 1
-                else:
-                    st.error(f"{sequence_label}: Incorrect! The correct sequence was {correct_sequence}")
-            else:
-                st.warning(f"{sequence_label}: No answer provided. Score: 0")
-            st.session_state.memory_submitted[i] = True
+def render_reading() -> None:
+    progress("Reading")
+    st.title("Reading and language")
+    st.write("The reading score is supplementary. The visual, listening and questionnaire scores retain the existing model's six-feature input contract.")
+    with st.form("reading_form"):
+        st.subheader("Reading comprehension")
+        reading_answers = [st.radio(q["prompt"], q["options"], index=None, key=f"reading_{i}") or "" for i, q in enumerate(READING_QUESTIONS)]
+        st.subheader("Visual discrimination")
+        count_d = st.number_input("How many letter d characters are in: b p q d b d p q b d p q?", 0, 12, value=None)
+        visual_set = st.multiselect("Select each different letter shown in: b p q d d p", ["b", "p", "q", "d"])
+        odd_one = st.radio("Choose the odd one out", ["○ ○ ○", "○ ○ ■", "○ ○ ○ ○"], index=None)
+        st.subheader("Listening discrimination")
+        phoneme_answers = []
+        for i, (label, filename, _) in enumerate(PHONEMES):
+            st.audio(str(AUDIO_DIR / filename), format="audio/mp3")
+            phoneme_answers.append(st.radio(label, ["Same", "Different"], index=None, key=f"phoneme_{i}") or "")
+        st.audio(str(AUDIO_DIR / "Bake.mp3"), format="audio/mp3")
+        rhyme_answers = st.multiselect("Which words rhyme with Bake?", ["Take", "Back", "Lake", "Bike"])
+        stress_answer = st.radio("Which syllable is stressed in Photography?", ["First", "Second", "Third", "Fourth"], index=None)
+        st.audio(str(AUDIO_DIR / "The_quick_brown.mp3"), format="audio/mp3")
+        sentence_answer = st.text_input("Write the sentence you heard")
+        st.subheader("Reading experiences")
+        survey_options = ["No", "Not often", "Sometimes", "Often", "Yes"]
+        survey_answers = [st.radio(question, survey_options, index=None, key=f"survey_{i}") for i, question in enumerate(SURVEY_QUESTIONS)]
+        submitted = st.form_submit_button("Continue to optional speech", type="primary")
+    if submitted:
+        required = reading_answers + phoneme_answers + [odd_one, stress_answer, sentence_answer] + survey_answers
+        if count_d is None or any(not answer for answer in required):
+            st.error("Please attempt every item before continuing. The speech section remains optional.")
+            return
+        reading = score_answers(reading_answers, [q["answer"] for q in READING_QUESTIONS])
+        reading["response_seconds"] = round(time.time() - st.session_state.reading_started, 1)
+        visual = (int(count_d == 3) + int(set(visual_set) == {"b", "p", "q", "d"}) + int(odd_one == "○ ○ ■")) / 3
+        phoneme = sum(answer == expected for answer, (_, _, expected) in zip(phoneme_answers, PHONEMES)) * 0.1
+        rhyme = len(set(rhyme_answers) & {"Take", "Lake"}) / 2 * 0.1
+        stress = 0.1 if stress_answer == "Second" else 0
+        sentence = 0.3 if score_answers([sentence_answer], ["The quick brown fox jumps over the lazy dog"])["correct"] else 0
+        audio = phoneme + rhyme + stress + sentence
+        survey_points = {"No": 0, "Not often": 1, "Sometimes": 2, "Often": 3, "Yes": 4}
+        survey = sum(survey_points[answer] for answer in survey_answers) / 20
+        st.session_state.reading = reading
+        st.session_state.Visual_discrimination = visual
+        st.session_state.Audio_Discrimination = audio
+        st.session_state.Survey_Score = survey
+        navigate("speech")
+        st.rerun()
 
-# Button to calculate and show final memory score for Part 1
-if st.button("Submit Final Memory Test Score", key="final_score_memory_button"):
-    total_score = sum(st.session_state.memory_scores)
-    total_score_percentage = total_score / 5
-    st.success(f"Final Memory Test Score: {total_score_percentage:.2f} (0 = no correct answers, 1 = all correct answers)")
 
-st.markdown("---")  # Add a horizontal line separator
+def finish_screening() -> None:
+    elapsed = (time.time() - st.session_state.start_time) / 60
+    features = {"Language_vocab": st.session_state.Language_vocab, "Memory": st.session_state.Memory, "Speed": speed_score(elapsed), "Visual_discrimination": st.session_state.Visual_discrimination, "Audio_Discrimination": st.session_state.Audio_Discrimination, "Survey_Score": st.session_state.Survey_Score}
+    st.session_state.elapsed_minutes = elapsed
+    st.session_state.prediction = predict(features)
+    navigate("result")
 
-# Header for Part 2
-st.header("🧩 Memory Test Part 2: Immediate Recall")
-st.write("Listen carefully to the audio. After the audio finishes, type in the words in the correct order and press submit to check your answer.")
 
-# Audio path for the WAV files
-audio_path = r"C:\Users\Acer\Desktop\Machine Leaning\Final Project\Audios_memory"
-
-# Initialize session state variables for Part 2
-if 'audio_files' not in st.session_state:
-    st.session_state.audio_files = [
-        f"{audio_path}/audio_1.wav",  # Example categories
-        f"{audio_path}/audio_2.wav",
-        f"{audio_path}/audio_3.wav",
-        f"{audio_path}/audio_4.wav",
-        f"{audio_path}/audio_5.wav",
-        f"{audio_path}/audio_6.wav",
-        f"{audio_path}/audio_7.wav",
-        f"{audio_path}/audio_8.wav",
-        f"{audio_path}/audio_9.wav",
-        f"{audio_path}/audio_10.wav"
-    ]
-    st.session_state.correct_answers = [
-        ["Apple", "Lettuce", "House", "River", "Dog", "Book", "Cooking"],
-        ["Dog", "Cat", "Rabbit", "Horse", "Sheep", "Cow", "Goat"],
-        ["Table", "Chair", "Sofa", "Bed", "Desk", "Lamp", "Shelf"],
-        ["River", "Lake", "Ocean", "Pond", "Stream", "Beach", "Waterfall"],
-        ["Red", "Blue", "Green", "Yellow", "Pink", "Black", "White"],
-        ["Car", "Bus", "Train", "Plane", "Boat", "Bike", "Truck"],
-        ["Rain", "Snow", "Sun", "Cloud", "Wind", "Storm", "Thunder"],
-        ["Pen", "Pencil", "Eraser", "Paper", "Book", "Notebook", "Ruler"],
-        ["Tree", "Flower", "Grass", "Leaf", "Seed", "Branch", "Bush"],
-        ["Shirt", "Pants", "Socks", "Jacket", "Hat", "Gloves", "Scarf"]
-    ]
-
-if 'selected_audios' not in st.session_state:
-    st.session_state.selected_audios = random.sample(list(enumerate(st.session_state.audio_files)), 5)
-
-if 'audio_play_counts' not in st.session_state:
-    st.session_state.audio_play_counts = [0 for _ in range(len(st.session_state.selected_audios))]
-
-if 'audio_user_answers' not in st.session_state:
-    st.session_state.audio_user_answers = ['' for _ in range(5)]
-
-if 'audio_scores' not in st.session_state:
-    st.session_state.audio_scores = [None for _ in range(5)]
-
-# Function to play audio via Streamlit's native audio function
-def play_audio(audio_file):
-    st.audio(audio_file, format="audio/wav")
-
-# Display each audio and input field for Part 2
-for idx, (audio_idx, audio_path) in enumerate(st.session_state.selected_audios):
-    audio_label = f"Audio {idx + 1}"
-    play_count = st.session_state.audio_play_counts[idx]
-
-    if play_count < 2:
-        if st.button(f"Play {audio_label} ({2 - play_count} plays left)", key=f"play_{idx}"):
-            st.session_state.audio_play_counts[idx] += 1
-            play_audio(audio_path)
+def render_speech() -> None:
+    progress("Optional speech")
+    st.title("Optional read aloud")
+    st.write("Read this sentence aloud: “The bright bird rested beside the quiet river.” Speech metrics are supplementary and are never sent to the prediction model.")
+    st.caption("If enabled, your recording is sent to the configured Azure Speech resource for transcription and is not retained by this app.")
+    if is_configured():
+        recording = st.audio_input("Record your reading")
+        if st.button("Analyze recording", disabled=recording is None):
+            try:
+                st.session_state.speech = transcribe(recording.getvalue())
+                st.success("Speech transcription completed.")
+            except (RuntimeError, ValueError) as exc:
+                st.warning(str(exc))
     else:
-        st.write(f"**{audio_label}: Audio can no longer be played.**")
-
-    user_answer_audio = st.text_input(f"Enter your answer for {audio_label}", key=f"audio_input_{idx}", 
-                                      value=st.session_state.audio_user_answers[idx])
-
-    if user_answer_audio:
-        st.session_state.audio_user_answers[idx] = user_answer_audio.strip()
-
-    if st.button(f"Submit {audio_label}", key=f"audio_submit_{idx}") and st.session_state.audio_scores[idx] is None:
-        correct_answer = " ".join(st.session_state.correct_answers[audio_idx])
-        if user_answer_audio.lower() == correct_answer.lower():
-            st.session_state.audio_scores[idx] = 1
-            st.write(f"**{audio_label}: Correct!**")
-        else:
-            st.session_state.audio_scores[idx] = 0
-            st.write(f"**{audio_label}: Incorrect! The correct answer was '{correct_answer}'**")
-
-# Button to calculate final score for Part 2
-if st.button("Submit Final Audio Test Score"):
-    audio_total_score = sum(filter(None, st.session_state.audio_scores))
-    audio_total_percentage = audio_total_score / len(st.session_state.audio_scores)
-    st.success(f"Final Audio Test Score: {audio_total_percentage:.2f} (0 = no correct answers, 1 = all correct answers)")
-    
-st.markdown("---")
-
-# Visual Discrimination Test Section
-st.header("👁️ Visual Discrimination Test")
-st.write("Complete the tasks below to assess visual discrimination ability.")
-
-if not st.session_state.time_up:
-    # Letter Identification
-    st.subheader("🔤 Letter Identification")
-    st.write("On the following line of letters, count the number of 'd' letters:")
-    st.markdown("<div style='font-size:20px; text-align:center; color:#8e44ad;'><strong>`b p q d b d p q b d p q`</strong></div>", unsafe_allow_html=True)
-
-    # Input for Letter Identification
-    if 'user_count_d' not in st.session_state:
-        st.session_state.user_count_d = 0
-
-    user_count_d = st.number_input(
-        "Enter the number of 'd' letters you found:",
-        min_value=0, max_value=12, step=1,
-        value=st.session_state.user_count_d,
-        key="letter_count"
-    )
-    st.session_state.user_count_d = user_count_d
-
-    # Button to submit Letter Identification task
-    if st.button("Submit Letter Identification"):
-        correct_count_d = 3  # Correct answer for the number of 'd'
-        score_letter_identification = 0
-        if user_count_d != 0:
-            score_letter_identification = min(user_count_d, correct_count_d) * (1/3)  # Each correct 'd' is worth 0.33, max is 1
-        st.success(f"Score for Letter Identification: {score_letter_identification:.2f} / 1")
-        st.session_state.score_letter_identification = score_letter_identification  # Store the score
-
-    st.markdown("---")  # Add a horizontal line separator
-
-    # Spot the Differences
-    st.subheader("🔎 Spot the Differences")
-    st.write("Identify the differences in the following sequence:")
-    st.markdown("<div style='font-size:20px; text-align:center; color:#e67e22;'><strong>`b p q d d p`</strong></div>", unsafe_allow_html=True)
-
-    # Pre-defined correct differences
-    correct_differences = ["b", "p", "q", "d"]
-
-    # Input for Spot the Differences
-    if 'user_spot_diff' not in st.session_state:
-        st.session_state.user_spot_diff = ''
-
-    user_spot_diff = st.text_input(
-        "List the differences you spotted (separate each with a comma):",
-        value=st.session_state.user_spot_diff,
-        key="spot_diff"
-    )
-    st.session_state.user_spot_diff = user_spot_diff
-
-    # Button to submit Spot the Differences task
-    if st.button("Submit Spot the Differences"):
-        # Process user input
-        if user_spot_diff.strip() != '':
-            user_differences = [item.strip().lower() for item in user_spot_diff.split(",") if item.strip()]
-            unique_user_differences = list(set(user_differences))
-
-            # Identify invalid inputs
-            invalid_differences = [diff for diff in unique_user_differences if diff not in correct_differences]
-
-            # Count correct differences
-            correct_count = sum(1 for diff in unique_user_differences if diff in correct_differences)
-
-            # Calculate the score
-            score_spot_differences = min(correct_count * 0.25, 1)  # Cap the score at 1
-        else:
-            # No input provided
-            score_spot_differences = 0
-            unique_user_differences = []
-            invalid_differences = []
-            correct_count = 0
-        # Display the result
-        st.write(f"**Your Input:** {user_spot_diff}")
-        st.write(f"**Correct Differences:** {', '.join(correct_differences)}")
-        st.write(f"**Unique Differences Considered:** {', '.join(unique_user_differences)}")
-        if invalid_differences:
-            st.warning(f"**Invalid Differences:** {', '.join(invalid_differences)} (not part of the correct differences)")
-        st.write(f"**Number of Correct Differences Identified:** {correct_count}")
-        st.success(f"Score for Spot the Differences: {score_spot_differences:.2f} / 1")
-        st.session_state.score_spot_differences = score_spot_differences  # Store the score
-
-    st.markdown("---")  # Add a horizontal line separator
-
-    # Odd One Out
-    st.subheader("🚦 Odd One Out")
-    st.write("Choose the option that doesn't belong:")
-
-    # Odd One Out Options
-    options = ['Select an answer', "a) ○", "b) ○", "c) ○", "d) ■"]
-
-    # Initialize 'odd_one_out' in session state if not present
-    if 'odd_one_out' not in st.session_state:
-        st.session_state['odd_one_out'] = 'Select an answer'
-
-    odd_one_out = st.radio(
-        "Which is the odd one out?",
-        options=options,
-        index=options.index(st.session_state['odd_one_out']) if st.session_state['odd_one_out'] in options else 0,
-        key="odd_one_out"
-    )
-
-    # Button to submit Odd One Out task
-    if st.button("Submit Odd One Out"):
-        if st.session_state['odd_one_out'] != 'Select an answer':
-            correct_answer = "d) ■"
-            if st.session_state['odd_one_out'] == correct_answer:
-                st.success("Correct! The odd one out is 'd) ■'.")
-                score_odd_one_out = 1
-            else:
-                st.error(f"Incorrect. The correct answer is 'd) ■'. You selected {st.session_state['odd_one_out']}.")
-                score_odd_one_out = 0
-        else:
-            st.warning("No answer selected. Score: 0")
-            score_odd_one_out = 0
-        st.success(f"Score for Odd One Out: {score_odd_one_out:.2f} / 1")
-        st.session_state.score_odd_one_out = score_odd_one_out  # Store the score
-
-    # Button to calculate final Visual Discrimination score
-    if st.button("Submit Final Visual Discrimination Score"):
-        visual_total_score = (
-            st.session_state.get('score_letter_identification', 0) +
-            st.session_state.get('score_spot_differences', 0) +
-            st.session_state.get('score_odd_one_out', 0)
-        ) / 3  # Average the scores
-        st.success(f"Final Visual Discrimination Score: {visual_total_score:.2f} (0 = lowest, 1 = highest)")
-        st.session_state.Visual_discrimination = visual_total_score  # Store the score in session state
-else:
-    st.warning("Time is up! Visual Discrimination Test is no longer available.")
-
-st.markdown("---")  # Add a horizontal line separator
-
-# Audio Discrimination Test Section
-st.header("🎧 Audio Discrimination Test")
-st.write("Complete the tasks below to assess audio discrimination ability.")
-
-if not st.session_state.time_up:
-    # Phoneme Discrimination
-    st.subheader("🔊 Phoneme Discrimination")
-    st.write("Listen to each audio pair and indicate whether they sound the same or different.")
-
-    # Updated file paths and questions
-    phoneme_questions = [
-        ("Audio 1", "Bat_Pat.mp3", "Different"),
-        ("Audio 2", "Ship_Sheep.mp3", "Different"),
-        ("Audio 3", "Cat_Cat.mp3", "Same"),
-        ("Audio 4", "Light_Right.mp3", "Different"),
-        ("Audio 5", "Thin_Tin.mp3", "Different"),
-    ]
-
-    if 'phoneme_user_answers' not in st.session_state:
-        st.session_state.phoneme_user_answers = ['Select an answer'] * len(phoneme_questions)
-
-    for idx, (audio_label, audio_file, correct_answer) in enumerate(phoneme_questions):
-        st.markdown(f"<h5>{audio_label}</h5>", unsafe_allow_html=True)
-
-        # Play audio button
-        audio_col, response_col = st.columns([1, 3])
-        with audio_col:
-            if st.button(f"Play {audio_label}", key=f"phoneme_play_{idx}"):
-                # Update to use the correct audio path
-                audio_path = os.path.join('C:\\Users\\Acer\\Desktop\\Machine Leaning\\Final Project\\Audios_memory', audio_file)
-                if os.path.exists(audio_path):
-                    st.audio(audio_path, format='audio/mp3')  # Updated to .mp3 format
-                else:
-                    st.error(f"Audio file {audio_file} not found.")
-
-        with response_col:
-            # User response
-            options = ['Select an answer', 'Same', 'Different']
-            user_answer = st.radio(
-                f"Do these audio clips sound the same or different? ({audio_label})",
-                options=options,
-                index=options.index(st.session_state.phoneme_user_answers[idx]) if st.session_state.phoneme_user_answers[idx] in options else 0,
-                key=f"phoneme_{idx}"
-            )
-            st.session_state.phoneme_user_answers[idx] = user_answer
-
-    st.markdown("---")  # Add a horizontal line separator
-
-
-    # Rhyming Words Section
-    st.subheader("📝 Rhyming Words")
-    st.write("Listen to the word 'Bake' and select all the words that rhyme with it.")
-
-    # Play the audio for 'Bake'
-    if st.button("Play Audio for 'Bake'", key="rhyming_play_bake"):
-        bake_audio_path = os.path.join('C:\\Users\\Acer\\Desktop\\Machine Leaning\\Final Project\\Audios_memory', 'Bake.mp3')
-        if os.path.exists(bake_audio_path):
-            st.audio(bake_audio_path, format='audio/mp3')  # Updated to .mp3 format
-        else:
-            st.error("Audio file for 'Bake' not found.")
-
-    # Options for rhyming words
-    rhyming_options = ["Take", "Back", "Lake", "Bike"]
-    rhyming_correct_answers = ["Take", "Lake"]
-
-    # Add audio play buttons for each option
-    for option in rhyming_options:
-        if st.button(f"Play Audio for '{option}'", key=f"rhyming_play_{option.lower()}"):
-            option_audio_path = os.path.join('C:\\Users\\Acer\\Desktop\\Machine Leaning\\Final Project\\Audios_memory', f"{option}.mp3")
-            if os.path.exists(option_audio_path):
-                st.audio(option_audio_path, format='audio/mp3')  # Updated to .mp3 format
-            else:
-                st.error(f"Audio file for '{option}' not found.")
-
-    # User selects the words
-    if 'rhyming_user_answers' not in st.session_state:
-        st.session_state.rhyming_user_answers = []
-
-    rhyming_user_answers = st.multiselect(
-        "Select words that rhyme with 'Bake':",
-        rhyming_options,
-        default=st.session_state.rhyming_user_answers,
-        key="rhyming_words"
-    )
-    st.session_state.rhyming_user_answers = rhyming_user_answers
-
-    st.markdown("---")  # Add a horizontal line separator
-
-
-
-    # Sentence Repetition Section
-    st.subheader("🗣️ Sentence Repetition")
-    st.write("Listen to the following sentence and write it down.")
-
-    # Play the audio for the sentence
-    if st.button("Play Sentence Audio", key="sentence_play"):
-        sentence_audio_path = os.path.join('C:\\Users\\Acer\\Desktop\\Machine Leaning\\Final Project\\Audios_memory', 'The_quick_brown.mp3')
-        if os.path.exists(sentence_audio_path):
-            st.audio(sentence_audio_path, format='audio/mp3')  # Updated to .mp3 format
-        else:
-            st.error("Sentence audio file not found.")
-
-    # Correct sentence answer
-    sentence_correct_answer = "The quick brown fox jumps over the lazy dog."
-
-    # Initialize session state for user's answer
-    if 'sentence_user_answer' not in st.session_state:
-        st.session_state.sentence_user_answer = ''
-
-    # Input field for user's sentence
-    sentence_user_answer = st.text_input(
-        "Write down the sentence you heard:",
-        value=st.session_state.sentence_user_answer,
-        key="sentence_repetition"
-    )
-    st.session_state.sentence_user_answer = sentence_user_answer
-
-    # Button to submit Audio Discrimination Test
-    if st.button("Submit Audio Discrimination Test"):
-        # Phoneme Discrimination Scoring
-        phoneme_score = 0
-        for idx, (user_answer, (question_text, audio_file, correct_answer)) in enumerate(zip(st.session_state.phoneme_user_answers, phoneme_questions)):
-            if user_answer != 'Select an answer' and user_answer == correct_answer:
-                phoneme_score += 0.1  # Each correct answer is worth 0.1
-            # Else, score is 0 for this question
-
-        # Rhyming Words Scoring
-        rhyming_score = 0
-        if st.session_state.rhyming_user_answers:
-            correct_set = set(rhyming_correct_answers)
-            user_set = set(st.session_state.rhyming_user_answers)
-            rhyming_score = (len(correct_set & user_set) / len(correct_set)) * 0.1  # Proportional score
-
-        # Stress Pattern Identification Scoring
-        stress_score = 0
-        if st.session_state.stress_user_answer != 'Select an answer' and st.session_state.stress_user_answer == stress_correct_answer:
-            stress_score = 0.1
-
-        # Sentence Repetition Scoring
-        sentence_score = 0
-        if st.session_state.sentence_user_answer.strip() != '':
-            if st.session_state.sentence_user_answer.strip().lower() == sentence_correct_answer.strip().lower():
-                sentence_score = 0.3
-
-        # Total Audio Discrimination Score
-        total_audio_score = phoneme_score + rhyming_score + stress_score + sentence_score
-
-        st.success(f"Phoneme Discrimination Score: {phoneme_score:.2f} / 0.5")
-        st.success(f"Rhyming Words Score: {rhyming_score:.2f} / 0.1")
-        st.success(f"Stress Pattern Identification Score: {stress_score:.2f} / 0.1")
-        st.success(f"Sentence Repetition Score: {sentence_score:.2f} / 0.3")
-        st.success(f"Total Audio Discrimination Score: {total_audio_score:.2f} / 1.0")
-
-        # Store the total audio score in session state
-        st.session_state.Audio_Discrimination = total_audio_score
-else:
-    st.warning("Time is up! Audio Discrimination Test is no longer available.")
-
-st.markdown("---")  # Add a horizontal line separator
-
-# Survey Test Section
-st.header("📝 Survey Test")
-st.write("Answer the following questions by selecting the most appropriate option:")
-
-if not st.session_state.time_up:
-    # Define the survey questions
-    survey_questions = [
-        "Do you often find it difficult to read words or letters in the correct order?",
-        "Do you have trouble spelling common words correctly?",
-        "Do you frequently mix up similar-looking letters like 'b' and 'd'?",
-        "Do you find it hard to concentrate when reading or writing?",
-        "Do you have difficulty remembering sequences such as phone numbers?"
-    ]
-
-    # Define the options and corresponding scores
-    survey_options = ["Select an answer", "Yes", "Often", "Sometimes", "Not Often", "No"]
-    survey_scores = {"Yes": 4, "Often": 3, "Sometimes": 2, "Not Often": 1, "No": 0}
-
-    # Initialize user responses
-    if 'survey_user_responses' not in st.session_state:
-        st.session_state.survey_user_responses = ['Select an answer'] * len(survey_questions)
-
-    # Loop through the questions and collect responses
-    for i, question in enumerate(survey_questions):
-        st.markdown(f"<h5>Question {i + 1}: {question}</h5>", unsafe_allow_html=True)
-        response = st.radio(
-            f"Select your answer for Question {i + 1}",
-            survey_options,
-            index=survey_options.index(st.session_state.survey_user_responses[i]) if st.session_state.survey_user_responses[i] in survey_options else 0,
-            key=f"survey_q{i+1}"
-        )
-        st.session_state.survey_user_responses[i] = response
-
-    # Submit button for survey test
-    if st.button("Submit Survey Test"):
-        # Calculate the raw score and scaled score
-        raw_score = 0
-        for resp in st.session_state.survey_user_responses:
-            if resp != "Select an answer":
-                raw_score += survey_scores[resp]
-            # Else, score is 0 for this question
-        scaled_score = raw_score / 20  # Total possible points = 20 (5 questions * 4 points max per question)
-
-        # Display the results
-        st.success(f"Survey Test Raw Score: {raw_score} / 20")
-        st.success(f"Survey Test Scaled Score: {scaled_score:.2f} (0 = lowest, 1 = highest)")
-        st.session_state.Survey_Score = scaled_score  # Store the score in session state
-else:
-    st.warning("Time is up! Survey Test is no longer available.")
-
-st.markdown("---")  # Add a horizontal line separator
-
-# Prediction Section
-st.header("🔮 Dyslexia Prediction")
-st.write("Based on your test scores and time taken, we will predict the likelihood of dyslexia.")
-
-# Collect the scores from session state, default to 0 if not set
-lang_vocab = st.session_state.get('Language_vocab', 0)
-memory = st.session_state.get('Memory', 0)
-visual = st.session_state.get('Visual_discrimination', 0)
-audio = st.session_state.get('Audio_Discrimination', 0)
-survey = st.session_state.get('Survey_Score', 0)
-
-# Calculate the time taken in minutes
-time_taken = (int(time.time()) - st.session_state.start_time) / 60  # Time in minutes
-
-# Calculate the speed score
-speed = max(0, min(1, 1 - (time_taken - min_time) / (max_time - min_time)))
-
-# Display the time taken, time remaining, and speed score
-time_remaining = max(0, max_time - time_taken)
-st.info(f"**Time taken so far:** {time_taken:.2f} minutes")
-st.info(f"**Time remaining until {max_time} minutes:** {time_remaining:.2f} minutes")
-st.info(f"**Calculated Speed Score:** {speed:.2f} (1 = fastest at {min_time} minutes, 0 = slowest at {max_time} minutes)")
-
-# Add a warning if any scores are zero
-if any(score == 0 for score in [lang_vocab, memory, visual, audio, survey]):
-    st.warning("Some test scores are zero due to unanswered questions. This may affect the accuracy of the prediction.")
-
-# Function to make predictions
-def predict_dyslexia(lang_vocab, memory, speed, visual, audio, survey):
-    # Create a DataFrame for the new input data
-    input_data = pd.DataFrame([[lang_vocab, memory, speed, visual, audio, survey]], columns=columns)
-    # Scale the input data
-    scaled_data = scaler.transform(input_data)
-    # Predict using the model
-    prediction = model.predict(scaled_data)
-    # Interpret the result
-    label = int(prediction[0])
-    if label == 0:
-        return "🚩 There is a **high chance** of the applicant having dyslexia."
-    elif label == 1:
-        return "⚠️ There is a **moderate chance** of the applicant having dyslexia."
-    else:
-        return "✅ There is a **low chance** of the applicant having dyslexia."
-
-if st.button("Predict"):
-    result = predict_dyslexia(lang_vocab, memory, speed, visual, audio, survey)
-    if "high chance" in result:
-        st.error(result)
-    elif "moderate chance" in result:
-        st.warning(result)
-    else:
-        st.success(result)
+        st.info("Azure Speech is not configured. You can continue without recording; the model result is unaffected.")
+    if "speech" in st.session_state:
+        st.write(f"Transcription: {st.session_state.speech['transcription']}")
+    label = "Continue to result" if "speech" in st.session_state else "Skip speech and view result"
+    if st.button(label, type="primary"):
+        try:
+            finish_screening()
+            st.rerun()
+        except (ValueError, ModelServiceError) as exc:
+            st.error(str(exc))
+
+
+def render_results() -> None:
+    progress("Result")
+    result = st.session_state.get("prediction")
+    if not result:
+        navigate("home")
+        st.rerun()
+    st.markdown('<div class="eyebrow">Screening result</div>', unsafe_allow_html=True)
+    st.title(f"{result['indication']} screening indication")
+    st.write("This category is the output of the existing trained model. It is not a diagnosis or a measure of ability.")
+    cols = st.columns(4)
+    with cols[0]: metric_card("Model result", result["indication"])
+    with cols[1]: metric_card("Model confidence", f"{result['confidence']:.0%}" if result["confidence"] is not None else "Unavailable")
+    with cols[2]: metric_card("Vocabulary", f"{st.session_state.vocabulary['accuracy']:.0%}")
+    with cols[3]: metric_card("Memory", f"{st.session_state.memory['accuracy']:.0%}")
+    detail_cols = st.columns(3)
+    detail_cols[0].metric("Memory recall", f"{st.session_state.memory['recall_score']:.0%}")
+    detail_cols[1].metric("Reading", f"{st.session_state.reading['accuracy']:.0%}")
+    detail_cols[2].metric("Session time", f"{st.session_state.elapsed_minutes:.1f} min")
+    st.subheader("Screening summary")
+    summary = pd.DataFrame([
+        ["Vocabulary", st.session_state.vocabulary["total"], st.session_state.vocabulary["correct"], st.session_state.vocabulary["incorrect"], st.session_state.vocabulary["accuracy"], st.session_state.vocabulary["response_seconds"]],
+        ["Memory", st.session_state.memory["total"], st.session_state.memory["correct"], st.session_state.memory["incorrect"], st.session_state.memory["accuracy"], st.session_state.memory["response_seconds"]],
+        ["Reading (supplementary)", st.session_state.reading["total"], st.session_state.reading["correct"], st.session_state.reading["incorrect"], st.session_state.reading["accuracy"], st.session_state.reading["response_seconds"]],
+    ], columns=["Section", "Questions", "Correct", "Incorrect", "Accuracy", "Response time (s)"])
+    st.dataframe(summary, hide_index=True, use_container_width=True, column_config={"Accuracy": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)})
+    st.caption(f"Total session time: {st.session_state.elapsed_minutes:.1f} minutes. Reading response time: {st.session_state.reading['response_seconds']:.0f} seconds.")
+    st.subheader("Model inputs")
+    model_frame = pd.DataFrame({"Feature": result["features"].keys(), "Score": result["features"].values()})
+    st.bar_chart(model_frame, x="Feature", y="Score", horizontal=True, height=320)
+    st.caption("Only these six original, ordered features were scaled and sent to model.pkl. Reading and speech metrics are supplementary.")
+    with st.expander("What these scores mean"):
+        st.write("Accuracy is the share of correct responses. Memory recall includes partial credit for words recalled in the original order. The speed score uses the original app's 3-to-30-minute scale. Survey answers describe reported experiences; they are not clinical findings.")
+    importance = feature_importance()
+    if importance:
+        st.subheader("How the fitted model weighs features")
+        importance_frame = pd.DataFrame({"Feature": importance.keys(), "Global importance": importance.values()})
+        st.bar_chart(importance_frame, x="Feature", y="Global importance", horizontal=True, height=320)
+        st.caption("Global Random Forest impurity importance across the fitted model—not a causal explanation and not an individual clinical finding.")
+    if result["probabilities"]:
+        with st.expander("Model class probabilities"):
+            st.dataframe(pd.DataFrame([result["probabilities"]]), hide_index=True, use_container_width=True)
+    if "speech" in st.session_state:
+        with st.expander("Optional speech metrics"):
+            st.json(st.session_state.speech)
+    st.markdown(f'<div class="notice"><strong>Important:</strong> {DISCLAIMER}</div>', unsafe_allow_html=True)
+    st.button("Start a new screening", on_click=restart)
+
+
+initialize()
+page = st.session_state.page
+if page == "home": render_home()
+elif page == "instructions": render_instructions()
+elif page == "vocabulary": render_vocabulary()
+elif page == "memory": render_memory()
+elif page == "reading": render_reading()
+elif page == "speech": render_speech()
+else: render_results()

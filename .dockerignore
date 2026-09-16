@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+*.ipynb
+*.ipynb_checkpoints
+app_mac_ver.py
+docs
+labelled_dysx.csv
+scripts
+tests
