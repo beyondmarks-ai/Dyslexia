@@ -9,13 +9,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+import base64
 from functools import lru_cache
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from services.api_gateway import is_configured as gateway_is_configured, post_json
+
 
 def is_configured() -> bool:
-    return bool(
+    return gateway_is_configured() or bool(
         os.getenv("AZURE_SPEECH_ENDPOINT")
         and os.getenv("AZURE_SPEECH_RESOURCE_ID")
         and os.getenv("AZURE_SPEECH_REGION")
@@ -25,6 +28,12 @@ def is_configured() -> bool:
 def transcribe(audio: bytes) -> dict:
     if not audio:
         raise ValueError("Record audio before requesting transcription.")
+    if gateway_is_configured():
+        return post_json(
+            "speech/transcribe",
+            {"audio_base64": base64.b64encode(audio).decode("ascii")},
+            timeout=60,
+        )
     if not is_configured():
         raise RuntimeError("Azure Speech is not configured; the screening can continue without it.")
 
@@ -101,6 +110,12 @@ def synthesize(text: str) -> bytes:
     text = text.strip()
     if not text or len(text) > 300:
         raise ValueError("Speech prompt must contain between 1 and 300 characters.")
+    if gateway_is_configured():
+        result = post_json("speech/synthesize", {"text": text}, timeout=60)
+        try:
+            return base64.b64decode(result["audio_base64"], validate=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Dyslexia API returned invalid synthesized audio.") from exc
     if not is_configured() or not os.getenv("AZURE_SPEECH_REGION"):
         raise RuntimeError("Azure Speech synthesis is not configured.")
     try:

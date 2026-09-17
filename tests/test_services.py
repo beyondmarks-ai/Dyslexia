@@ -48,6 +48,10 @@ class ServiceTests(unittest.TestCase):
         }
         validated = validate_question_set(payload)
         self.assertEqual(len(validated["vocabulary"]), 10)
+        self.assertEqual(
+            validate_question_set(validated)["reading"],
+            validated["reading"],
+        )
         with self.assertRaisesRegex(ValueError, "explicit blank"):
             invalid = dict(payload)
             invalid["vocabulary"] = [dict(item) for item in vocabulary]

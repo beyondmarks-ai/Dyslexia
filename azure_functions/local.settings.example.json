@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AZURE_OPENAI_ENDPOINT": "https://<resource>.openai.azure.com/",
+    "AZURE_OPENAI_DEPLOYMENT": "question-generator",
+    "AZURE_OPENAI_API_VERSION": "2024-10-21",
+    "AZURE_SPEECH_ENDPOINT": "https://<resource>.cognitiveservices.azure.com/",
+    "AZURE_SPEECH_RESOURCE_ID": "/subscriptions/<id>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<resource>",
+    "AZURE_SPEECH_REGION": "<region>",
+    "AZURE_SPEECH_LANGUAGE": "en-US"
+  }
+}

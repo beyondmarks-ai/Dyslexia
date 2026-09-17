@@ -20,6 +20,26 @@ Azure OpenAI question generation is optional. The current deployment uses the
 prompts only; the repository's existing model
 continues to calculate the screening result.
 
+## Client gateway
+
+`dyslexia-api-617db5` is a Python 3.11 Azure Function App in the same resource
+group. It exposes a health endpoint plus Function-key-protected question and
+Speech endpoints. Its managed identity has Cognitive Services OpenAI User on
+`dyslexia-ai-617db5` and Cognitive Services User on `dyslexia-speech-617db5`.
+
+This means a submitted/local copy of the Streamlit project can call Azure-backed
+features using only `DYSLEXIA_API_URL` and `DYSLEXIA_API_KEY`; it does not require
+Azure CLI login, an Azure subscription, or any Azure resource key. Store the
+Function key in `.streamlit/secrets.toml` (from the tracked example) or an
+environment variable, never in Git. The Function key authorizes use of the shared
+gateway, so rotate it if it is exposed.
+
+Deploy gateway source after changes:
+
+```powershell
+.\scripts\deploy_function.ps1 -FunctionApp dyslexia-api-617db5
+```
+
 ## Authenticate and deploy
 
 ```powershell

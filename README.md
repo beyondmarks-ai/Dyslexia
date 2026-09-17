@@ -92,6 +92,29 @@ phoneme and self-report items are shuffled each session without changing their s
 The deployment uses `DefaultAzureCredential`; assign the Cognitive Services OpenAI
 User role to the local user or Container App managed identity.
 
+## Azure Function gateway (recommended for client handoff)
+
+The project includes a secured Azure Function gateway for Azure OpenAI and Speech.
+It holds the Azure service access behind managed identity, so a client running the
+app locally does **not** need Azure CLI, an Azure login, or Azure service keys.
+
+Deploy the gateway with:
+
+```powershell
+.\scripts\deploy_function.ps1 -FunctionApp <function-app-name>
+```
+
+Then copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml` and receive
+the Function URL and Function key through a secure channel. Alternatively set
+`DYSLEXIA_API_URL` and `DYSLEXIA_API_KEY` as environment variables. The real
+`secrets.toml` file and local Function settings are git-ignored. Do not commit or
+share the Function key publicly.
+
+When these two values are present, the app uses the gateway for fresh questions,
+speech synthesis, and optional transcription. The client needs only normal Python
+dependencies from `requirements.txt`; the gateway owns the Azure-specific package
+dependencies and credentials.
+
 ## Run with Docker
 
 ```powershell
@@ -127,6 +150,8 @@ See [docs/AZURE.md](docs/AZURE.md) for identity configuration, environment varia
 | `services/model_service.py` | Artifact loading, validation, scaling and inference |
 | `services/test_service.py` | Deterministic score calculations |
 | `services/speech_service.py` | Optional Azure Speech integration |
+| `services/api_gateway.py` | Client for the secured Azure Function gateway |
+| `azure_functions/` | Managed-identity Azure Function API source |
 | `model.pkl`, `scaler.pkl` | Existing inference artifacts |
 | `Audios_memory/` | Audio exercises |
 | `questions_vocab.json` | Vocabulary question bank |

@@ -9,13 +9,15 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from services.api_gateway import is_configured as gateway_is_configured, post_json
+
 
 VOCABULARY_COUNT = 10
 READING_COUNT = 4
 
 
 def is_configured() -> bool:
-    return bool(
+    return gateway_is_configured() or bool(
         os.getenv("AZURE_OPENAI_ENDPOINT")
         and os.getenv("AZURE_OPENAI_DEPLOYMENT")
     )
@@ -23,6 +25,8 @@ def is_configured() -> bool:
 
 def generate_question_set() -> dict:
     """Return validated vocabulary and reading questions for one session."""
+    if gateway_is_configured():
+        return validate_question_set(post_json("questions", {}, timeout=90))
     if not is_configured():
         raise RuntimeError("Azure question generation is not configured.")
 
@@ -182,6 +186,30 @@ def _validate_reading_items(items) -> list[dict]:
             raise ValueError("Each reading item must be an object.")
         passage = item.get("passage")
         question = item.get("question")
+        # Question sets returned by this module are already normalized to a
+        # single ``prompt`` field for the Streamlit UI.  Accept that trusted,
+        # normalized representation too, so a Function gateway response can
+        # be validated again by a client without changing its shape.
+        existing_prompt = item.get("prompt")
+        if existing_prompt is not None:
+            if not isinstance(existing_prompt, str) or len(existing_prompt.strip()) < 30:
+                raise ValueError("Every reading item must include a self-contained passage.")
+            if "?" not in existing_prompt:
+                raise ValueError("Every reading item must include an explicit question.")
+            normalized.extend(
+                _validate_items(
+                    [
+                        {
+                            "prompt": existing_prompt.strip(),
+                            "options": item.get("options"),
+                            "correct_answer": item.get("correct_answer"),
+                        }
+                    ],
+                    1,
+                    "prompt",
+                )
+            )
+            continue
         if not isinstance(passage, str) or len(passage.strip()) < 30:
             raise ValueError("Every reading item must include a self-contained passage.")
         if not isinstance(question, str) or not question.strip() or "?" not in question:
