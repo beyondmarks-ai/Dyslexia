@@ -14,6 +14,12 @@ The default deployment needs only Azure Container Apps and its supporting regist
 
 Azure Speech is optional. No Speech or Storage resource is required for the core application. Blob Storage was not added because results are intentionally not persisted.
 
+Azure OpenAI question generation is optional. The current deployment uses the
+`question-generator` deployment on `dyslexia-ai-617db5` with the low-cost
+`gpt-4.1-nano` model. It generates questions and session-specific dictation/read-aloud
+prompts only; the repository's existing model
+continues to calculate the screening result.
+
 ## Authenticate and deploy
 
 ```powershell
@@ -30,10 +36,23 @@ Install `requirements-azure.txt` in the image and configure:
 
 | Variable | Purpose |
 |---|---|
-| `AZURE_SPEECH_ENDPOINT` | Speech resource endpoint |
+| `AZURE_SPEECH_ENDPOINT` | Custom subdomain endpoint for the Speech resource |
 | `AZURE_SPEECH_RESOURCE_ID` | Full Azure resource ID used for Entra authentication |
+| `AZURE_SPEECH_REGION` | Azure region containing the Speech resource |
 | `AZURE_SPEECH_LANGUAGE` | Recognition locale; defaults to `en-US` |
 
 Assign the Container App managed identity the Cognitive Services User role on the Speech resource. Locally, `DefaultAzureCredential` can use the signed-in Azure CLI account. No key is required. If configuration, identity, SDK or service access is unavailable, the application shows a notice and continues without speech.
 
 `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_CONTAINER` are reserved for a future, explicitly approved retention requirement. They are currently unused to avoid collecting sensitive student information.
+
+## Optional Azure OpenAI questions
+
+| Variable | Purpose |
+|---|---|
+| `AZURE_OPENAI_ENDPOINT` | Custom endpoint for the Azure OpenAI resource |
+| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name; currently `question-generator` |
+| `AZURE_OPENAI_API_VERSION` | API version; currently `2024-10-21` |
+
+Assign the Container App managed identity the Cognitive Services OpenAI User role
+on the Azure OpenAI resource. Generated output is schema-constrained and validated;
+the app falls back to its reviewed local questions on any failure.

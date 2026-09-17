@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
+from functools import lru_cache
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 
 def is_configured() -> bool:
     return bool(
         os.getenv("AZURE_SPEECH_ENDPOINT")
         and os.getenv("AZURE_SPEECH_RESOURCE_ID")
+        and os.getenv("AZURE_SPEECH_REGION")
     )
 
 
@@ -22,34 +29,56 @@ def transcribe(audio: bytes) -> dict:
         raise RuntimeError("Azure Speech is not configured; the screening can continue without it.")
 
     try:
-        import azure.cognitiveservices.speech as speechsdk
         from azure.identity import DefaultAzureCredential
     except ImportError as exc:
         raise RuntimeError("Install requirements-azure.txt to enable optional speech.") from exc
 
     endpoint = os.environ["AZURE_SPEECH_ENDPOINT"]
-    resource_id = os.environ["AZURE_SPEECH_RESOURCE_ID"]
+    region = os.environ["AZURE_SPEECH_REGION"]
+    language = os.getenv("AZURE_SPEECH_LANGUAGE", "en-US")
     token = DefaultAzureCredential().get_token(
         "https://cognitiveservices.azure.com/.default"
     ).token
-    config = speechsdk.SpeechConfig(endpoint=endpoint)
-    config.authorization_token = f"aad#{resource_id}#{token}"
-    config.speech_recognition_language = os.getenv("AZURE_SPEECH_LANGUAGE", "en-US")
 
     suffix = ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
         handle.write(audio)
         path = Path(handle.name)
     try:
-        audio_config = speechsdk.audio.AudioConfig(filename=str(path))
-        result = speechsdk.SpeechRecognizer(config, audio_config).recognize_once_async().get()
-        if result.reason != speechsdk.ResultReason.RecognizedSpeech:
-            detail = getattr(result, "error_details", None) or str(result.reason)
+        query = urllib.parse.urlencode({"language": language, "format": "detailed"})
+        url = (
+            f"{endpoint.rstrip('/')}"
+            "/stt/speech/recognition/conversation/cognitiveservices/v1"
+            f"?{query}"
+        )
+        request = urllib.request.Request(
+            url,
+            data=audio,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Ocp-Apim-Subscription-Region": region,
+                "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                result = json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Azure Speech request failed ({exc.code}): {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Azure Speech request failed: {exc.reason}") from exc
+
+        if result.get("RecognitionStatus") != "Success":
+            detail = result.get("RecognitionStatus", "unknown response")
             raise RuntimeError(f"Azure Speech did not recognize the recording: {detail}")
+        transcription = result.get("DisplayText", "")
         duration = _wav_duration(path)
-        words = result.text.split()
+        words = transcription.split()
         return {
-            "transcription": result.text,
+            "transcription": transcription,
             "duration_seconds": duration,
             "words_attempted": len(words),
             "recognized_words": len(words),
@@ -64,3 +93,48 @@ def _wav_duration(path: Path) -> float | None:
             return recording.getnframes() / recording.getframerate()
     except (wave.Error, OSError, ZeroDivisionError):
         return None
+
+
+@lru_cache(maxsize=64)
+def synthesize(text: str) -> bytes:
+    """Create a short WAV prompt using Azure Speech and keyless authentication."""
+    text = text.strip()
+    if not text or len(text) > 300:
+        raise ValueError("Speech prompt must contain between 1 and 300 characters.")
+    if not is_configured() or not os.getenv("AZURE_SPEECH_REGION"):
+        raise RuntimeError("Azure Speech synthesis is not configured.")
+    try:
+        from azure.identity import DefaultAzureCredential
+    except ImportError as exc:
+        raise RuntimeError("Install requirements-azure.txt to enable speech synthesis.") from exc
+
+    endpoint = os.environ["AZURE_SPEECH_ENDPOINT"].rstrip("/")
+    region = os.environ["AZURE_SPEECH_REGION"]
+    voice = os.getenv("AZURE_SPEECH_VOICE", "en-US-AvaMultilingualNeural")
+    token = DefaultAzureCredential().get_token(
+        "https://cognitiveservices.azure.com/.default"
+    ).token
+    ssml = (
+        '<speak version="1.0" xml:lang="en-US">'
+        f'<voice name="{escape(voice)}">{escape(text)}</voice></speak>'
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{endpoint}/tts/cognitiveservices/v1",
+        data=ssml,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Ocp-Apim-Subscription-Region": region,
+            "X-Microsoft-OutputFormat": "riff-16khz-16bit-mono-pcm",
+            "Content-Type": "application/ssml+xml",
+            "User-Agent": "dyslexia-screening",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Azure speech synthesis failed ({exc.code}): {detail}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Azure speech synthesis failed: {exc}") from exc

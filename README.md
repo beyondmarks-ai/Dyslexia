@@ -33,7 +33,7 @@ If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process Bypass`
 2. Runs vocabulary and memory exercises.
 3. Runs reading, visual discrimination, listening and questionnaire activities.
 4. Optionally sends an explicitly recorded reading to Azure Speech for transcription.
-5. Produces a screening indication and score summary.
+5. Produces a screening indication and color-coded likelihood score summary.
 
 The model receives exactly these six values, in this order:
 
@@ -57,6 +57,7 @@ Install the optional dependencies and configure Azure Speech before starting the
 pip install -r requirements-azure.txt
 $env:AZURE_SPEECH_ENDPOINT = "https://<resource>.cognitiveservices.azure.com/"
 $env:AZURE_SPEECH_RESOURCE_ID = "/subscriptions/<id>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<resource>"
+$env:AZURE_SPEECH_REGION = "<region>"
 $env:AZURE_SPEECH_LANGUAGE = "en-US"
 az login
 streamlit run app.py
@@ -66,9 +67,30 @@ The app uses `DefaultAzureCredential`, so Azure CLI authentication works locally
 
 | Variable | Required | Description |
 |---|---|---|
-| `AZURE_SPEECH_ENDPOINT` | Speech only | Azure Speech endpoint |
+| `AZURE_SPEECH_ENDPOINT` | Speech only | Custom subdomain endpoint for the Speech resource |
 | `AZURE_SPEECH_RESOURCE_ID` | Speech only | Azure resource ID used for Entra authentication |
+| `AZURE_SPEECH_REGION` | Speech only | Azure region containing the Speech resource |
 | `AZURE_SPEECH_LANGUAGE` | No | Recognition locale; defaults to `en-US` |
+
+## Optional AI-generated questions
+
+The app can use a low-cost Azure OpenAI deployment to create a fresh, structured
+vocabulary, reading, dictation and read-aloud set for each screening. Generated items are validated for
+shape, unique choices, self-contained passages and exact answer matching. If the
+service is unavailable or output fails validation, the reviewed built-in question
+bank is used automatically. No user answers or screening results are sent to the AI.
+
+```powershell
+$env:AZURE_OPENAI_ENDPOINT = "https://<resource>.openai.azure.com/"
+$env:AZURE_OPENAI_DEPLOYMENT = "question-generator"
+$env:AZURE_OPENAI_API_VERSION = "2024-10-21"
+az login
+```
+
+Azure Speech synthesizes the changing dictation sentence as WAV audio. The reviewed
+phoneme and self-report items are shuffled each session without changing their scoring.
+The deployment uses `DefaultAzureCredential`; assign the Cognitive Services OpenAI
+User role to the local user or Container App managed identity.
 
 ## Run with Docker
 

@@ -20,6 +20,7 @@ FEATURES = (
     "Survey_Score",
 )
 LABELS = {0: "High", 1: "Moderate", 2: "Low"}
+LIKELIHOOD_WEIGHTS = {"High": 1.0, "Moderate": 0.5, "Low": 0.0}
 
 
 class ModelServiceError(RuntimeError):
@@ -95,7 +96,18 @@ def predict(values: Mapping[str, float]) -> dict:
         "confidence": confidence,
         "probabilities": probabilities,
         "features": validated,
+        "likelihood": screening_likelihood(probabilities),
     }
+
+
+def screening_likelihood(probabilities: Mapping[str, float] | None) -> float | None:
+    """Return a 0-1 model-derived screening score, not a clinical probability."""
+    if not probabilities:
+        return None
+    return sum(
+        float(probabilities.get(label, 0.0)) * weight
+        for label, weight in LIKELIHOOD_WEIGHTS.items()
+    )
 
 
 def feature_importance() -> dict[str, float] | None:

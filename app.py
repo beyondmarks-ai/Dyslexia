@@ -12,7 +12,8 @@ import pandas as pd
 import streamlit as st
 
 from services.model_service import ModelServiceError, feature_importance, predict
-from services.speech_service import is_configured, transcribe
+from services.question_service import generate_question_set, is_configured as ai_is_configured
+from services.speech_service import is_configured, synthesize, transcribe
 from services.test_service import score_answers, score_recalled_words, speed_score
 
 ROOT = Path(__file__).resolve().parent
@@ -61,14 +62,21 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Crimson+Pro:wght@600;700&display=swap');
     :root { --ink:#1e1b4b; --muted:#475569; --primary:#4f46e5; --surface:#fff; --border:#c7d2fe; }
-    html, body, [class*="css"] { font-family:'Atkinson Hyperlegible',Arial,sans-serif; color:var(--ink); }
-    .stApp { background:linear-gradient(145deg,#f8fafc 0%,#eef2ff 100%); }
+    html, body { font-family:'Atkinson Hyperlegible',Arial,sans-serif; color:var(--ink); }
+    .stApp, [data-testid="stAppViewContainer"] { background:linear-gradient(145deg,#f8fafc 0%,#eef2ff 100%); color:var(--ink); }
+    .stApp p, .stApp li, .stApp label,
+    .stApp [data-testid="stWidgetLabel"],
+    .stApp [data-testid="stCaptionContainer"],
+    .stApp [data-testid="stMetricLabel"],
+    .stApp [data-testid="stMetricValue"] { color:var(--ink); }
+    .stApp input, .stApp textarea { color:var(--ink); background:#fff; }
     .block-container { max-width:1060px; padding-top:2rem; padding-bottom:4rem; }
     h1,h2,h3 { font-family:'Crimson Pro',Georgia,serif; color:var(--ink); letter-spacing:-.01em; }
     .hero { background:#fff; border:1px solid var(--border); border-radius:24px; padding:clamp(24px,5vw,56px); box-shadow:0 14px 34px rgba(79,70,229,.09); }
     .eyebrow { color:#4338ca; font-weight:700; text-transform:uppercase; letter-spacing:.08em; font-size:.82rem; }
     .lead { color:var(--muted); font-size:1.16rem; line-height:1.65; max-width:720px; }
     .notice { background:#fff7ed; border-left:5px solid #ea580c; border-radius:12px; padding:16px 18px; color:#431407; margin:18px 0; }
+    .danger-notice { background:#fef2f2; border:2px solid #b91c1c; border-left-width:8px; border-radius:14px; padding:18px 20px; color:#7f1d1d; margin:20px 0; font-weight:700; }
     .stepbar { display:flex; gap:8px; margin:8px 0 28px; flex-wrap:wrap; }
     .step { padding:9px 13px; border-radius:999px; border:1px solid var(--border); background:#fff; color:#475569; font-weight:700; }
     .step.active { background:#4f46e5; color:#fff; border-color:#4f46e5; }
@@ -76,7 +84,14 @@ st.markdown(
     .result-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:22px; min-height:126px; box-shadow:0 8px 22px rgba(30,27,75,.06); }
     .result-label { color:#475569; font-size:.9rem; }
     .result-value { color:#1e1b4b; font-size:1.8rem; font-weight:700; margin-top:5px; }
-    div.stButton > button, div.stFormSubmitButton > button { min-height:48px; border-radius:12px; font-weight:700; transition:box-shadow .18s ease,background .18s ease; }
+    .likelihood-card { background:#fff; border:1px solid var(--border); border-radius:18px; padding:24px; margin:18px 0 24px; }
+    .likelihood-score { color:#1e1b4b; font-size:2.4rem; font-weight:700; margin-bottom:14px; }
+    .likelihood-meter { position:relative; height:28px; border-radius:999px; background:linear-gradient(90deg,#15803d 0 33%,#d97706 33% 66%,#b91c1c 66% 100%); box-shadow:inset 0 0 0 2px rgba(15,23,42,.14); }
+    .likelihood-marker { position:absolute; top:-8px; width:5px; height:44px; border-radius:4px; background:#0f172a; transform:translateX(-50%); box-shadow:0 0 0 3px #fff; }
+    .likelihood-labels { display:flex; justify-content:space-between; color:#334155; font-weight:700; margin-top:9px; }
+    div.stButton > button, div.stFormSubmitButton > button { min-height:48px; border-radius:12px; font-weight:700; transition:box-shadow .18s ease,background .18s ease; color:var(--ink); }
+    div.stButton > button[kind="primary"], div.stButton > button[kind="primary"] *,
+    div.stFormSubmitButton > button[kind="primary"], div.stFormSubmitButton > button[kind="primary"] * { color:#fff !important; }
     div.stButton > button:focus-visible, div.stFormSubmitButton > button:focus-visible { outline:3px solid #f97316; outline-offset:2px; }
     [data-testid="stForm"] { background:#fff; border:1px solid var(--border); border-radius:18px; padding:20px; }
     [data-testid="stForm"] label,
@@ -126,6 +141,39 @@ def metric_card(label: str, value: str) -> None:
     st.markdown(f'<div class="result-card"><div class="result-label">{label}</div><div class="result-value">{value}</div></div>', unsafe_allow_html=True)
 
 
+def load_session_questions() -> None:
+    """Generate one fresh set per screening, falling back to reviewed local items."""
+    if "vocab_questions" in st.session_state:
+        return
+    if ai_is_configured():
+        try:
+            generated = generate_question_set()
+            st.session_state.vocab_questions = generated["vocabulary"]
+            st.session_state.reading_questions = generated["reading"]
+            st.session_state.dictation_sentence = generated["dictation_sentence"]
+            st.session_state.read_aloud_sentence = generated["read_aloud_sentence"]
+            st.session_state.question_source = "AI-generated for this session"
+            prepare_session_variations()
+            return
+        except (RuntimeError, ValueError):
+            pass
+    questions = json.loads((ROOT / "questions_vocab.json").read_text(encoding="utf-8"))["questions"]
+    st.session_state.vocab_questions = random.sample(questions, min(10, len(questions)))
+    st.session_state.reading_questions = [
+        {"prompt": item["prompt"], "options": item["options"], "correct_answer": item["answer"]}
+        for item in READING_QUESTIONS
+    ]
+    st.session_state.dictation_sentence = "The quick brown fox jumps over the lazy dog."
+    st.session_state.read_aloud_sentence = "The bright bird rested beside the quiet river."
+    st.session_state.question_source = "Reviewed built-in question bank"
+    prepare_session_variations()
+
+
+def prepare_session_variations() -> None:
+    st.session_state.phoneme_items = random.sample(PHONEMES, len(PHONEMES))
+    st.session_state.survey_questions = random.sample(SURVEY_QUESTIONS, len(SURVEY_QUESTIONS))
+
+
 def render_home() -> None:
     st.markdown(
         """
@@ -157,8 +205,9 @@ def render_vocabulary() -> None:
     st.title("Vocabulary")
     st.write("Choose the word that best completes each sentence.")
     if "vocab_questions" not in st.session_state:
-        questions = json.loads((ROOT / "questions_vocab.json").read_text(encoding="utf-8"))["questions"]
-        st.session_state.vocab_questions = random.sample(questions, min(10, len(questions)))
+        with st.spinner("Preparing a fresh question set..."):
+            load_session_questions()
+    st.caption(st.session_state.question_source)
     with st.form("vocabulary_form"):
         answers = [st.radio(q["question"], q["options"], index=None, key=f"vocab_{i}") or "" for i, q in enumerate(st.session_state.vocab_questions)]
         submitted = st.form_submit_button("Continue to memory", type="primary")
@@ -217,37 +266,46 @@ def render_reading() -> None:
     st.write("The reading score is supplementary. The visual, listening and questionnaire scores retain the existing model's six-feature input contract.")
     with st.form("reading_form"):
         st.subheader("Reading comprehension")
-        reading_answers = [st.radio(q["prompt"], q["options"], index=None, key=f"reading_{i}") or "" for i, q in enumerate(READING_QUESTIONS)]
+        reading_questions = st.session_state.get("reading_questions", READING_QUESTIONS)
+        reading_answers = [st.radio(q["prompt"], q["options"], index=None, key=f"reading_{i}") or "" for i, q in enumerate(reading_questions)]
         st.subheader("Visual discrimination")
         count_d = st.number_input("How many letter d characters are in: b p q d b d p q b d p q?", 0, 12, value=None)
         visual_set = st.multiselect("Select each different letter shown in: b p q d d p", ["b", "p", "q", "d"])
         odd_one = st.radio("Choose the odd one out", ["○ ○ ○", "○ ○ ■", "○ ○ ○ ○"], index=None)
         st.subheader("Listening discrimination")
         phoneme_answers = []
-        for i, (label, filename, _) in enumerate(PHONEMES):
+        phoneme_items = st.session_state.get("phoneme_items", PHONEMES)
+        for i, (label, filename, _) in enumerate(phoneme_items):
             st.audio(str(AUDIO_DIR / filename), format="audio/mp3")
             phoneme_answers.append(st.radio(label, ["Same", "Different"], index=None, key=f"phoneme_{i}") or "")
         st.audio(str(AUDIO_DIR / "Bake.mp3"), format="audio/mp3")
         rhyme_answers = st.multiselect("Which words rhyme with Bake?", ["Take", "Back", "Lake", "Bike"])
         stress_answer = st.radio("Which syllable is stressed in Photography?", ["First", "Second", "Third", "Fourth"], index=None)
-        st.audio(str(AUDIO_DIR / "The_quick_brown.mp3"), format="audio/mp3")
+        dictation_sentence = st.session_state.get("dictation_sentence", "The quick brown fox jumps over the lazy dog.")
+        try:
+            st.audio(synthesize(dictation_sentence), format="audio/wav")
+        except (RuntimeError, ValueError):
+            dictation_sentence = "The quick brown fox jumps over the lazy dog."
+            st.session_state.dictation_sentence = dictation_sentence
+            st.audio(str(AUDIO_DIR / "The_quick_brown.mp3"), format="audio/mp3")
         sentence_answer = st.text_input("Write the sentence you heard")
         st.subheader("Reading experiences")
         survey_options = ["No", "Not often", "Sometimes", "Often", "Yes"]
-        survey_answers = [st.radio(question, survey_options, index=None, key=f"survey_{i}") for i, question in enumerate(SURVEY_QUESTIONS)]
+        survey_questions = st.session_state.get("survey_questions", SURVEY_QUESTIONS)
+        survey_answers = [st.radio(question, survey_options, index=None, key=f"survey_{i}") for i, question in enumerate(survey_questions)]
         submitted = st.form_submit_button("Continue to optional speech", type="primary")
     if submitted:
         required = reading_answers + phoneme_answers + [odd_one, stress_answer, sentence_answer] + survey_answers
         if count_d is None or any(not answer for answer in required):
             st.error("Please attempt every item before continuing. The speech section remains optional.")
             return
-        reading = score_answers(reading_answers, [q["answer"] for q in READING_QUESTIONS])
+        reading = score_answers(reading_answers, [q.get("correct_answer", q.get("answer")) for q in reading_questions])
         reading["response_seconds"] = round(time.time() - st.session_state.reading_started, 1)
         visual = (int(count_d == 3) + int(set(visual_set) == {"b", "p", "q", "d"}) + int(odd_one == "○ ○ ■")) / 3
-        phoneme = sum(answer == expected for answer, (_, _, expected) in zip(phoneme_answers, PHONEMES)) * 0.1
+        phoneme = sum(answer == expected for answer, (_, _, expected) in zip(phoneme_answers, phoneme_items)) * 0.1
         rhyme = len(set(rhyme_answers) & {"Take", "Lake"}) / 2 * 0.1
         stress = 0.1 if stress_answer == "Second" else 0
-        sentence = 0.3 if score_answers([sentence_answer], ["The quick brown fox jumps over the lazy dog"])["correct"] else 0
+        sentence = 0.3 if score_answers([sentence_answer], [dictation_sentence])["correct"] else 0
         audio = phoneme + rhyme + stress + sentence
         survey_points = {"No": 0, "Not often": 1, "Sometimes": 2, "Often": 3, "Yes": 4}
         survey = sum(survey_points[answer] for answer in survey_answers) / 20
@@ -270,7 +328,8 @@ def finish_screening() -> None:
 def render_speech() -> None:
     progress("Optional speech")
     st.title("Optional read aloud")
-    st.write("Read this sentence aloud: “The bright bird rested beside the quiet river.” Speech metrics are supplementary and are never sent to the prediction model.")
+    read_aloud = st.session_state.get("read_aloud_sentence", "The bright bird rested beside the quiet river.")
+    st.write(f"Read this sentence aloud: “{read_aloud}” Speech metrics are supplementary and are never sent to the prediction model.")
     st.caption("If enabled, your recording is sent to the configured Azure Speech resource for transcription and is not retained by this app.")
     if is_configured():
         recording = st.audio_input("Record your reading")
@@ -301,6 +360,19 @@ def render_results() -> None:
         st.rerun()
     st.markdown('<div class="eyebrow">Screening result</div>', unsafe_allow_html=True)
     st.title(f"{result['indication']} screening indication")
+    st.markdown('<div class="danger-notice">This is not a diagnosis. The score below is a model-derived screening indicator—not the percentage chance that you have dyslexia. Please consult a qualified professional for an assessment.</div>', unsafe_allow_html=True)
+    likelihood = result.get("likelihood")
+    if likelihood is not None:
+        percentage = max(0.0, min(100.0, likelihood * 100))
+        st.markdown(
+            f'<div class="likelihood-card"><div class="result-label">Screening likelihood score</div>'
+            f'<div class="likelihood-score">{percentage:.0f}%</div>'
+            f'<div class="likelihood-meter" role="img" aria-label="Screening likelihood score {percentage:.0f} percent">'
+            f'<span class="likelihood-marker" style="left:{percentage:.1f}%"></span></div>'
+            '<div class="likelihood-labels"><span>Lower</span><span>Moderate</span><span>Higher</span></div></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Calculated from the fitted model's Low, Moderate and High class probabilities. It has not been clinically calibrated.")
     st.write("This category is the output of the existing trained model. It is not a diagnosis or a measure of ability.")
     cols = st.columns(4)
     with cols[0]: metric_card("Model result", result["indication"])
